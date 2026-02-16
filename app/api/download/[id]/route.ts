@@ -28,7 +28,7 @@ export async function GET(
 
   return new NextResponse(buffer, {
     headers: {
-      "Content-Type": file.mime_type || "application/octet-stream",
+      "Content-Type": "application/octet-stream",
       "Content-Disposition": `attachment; filename="${encodeURIComponent(file.original_name)}"`,
       "Content-Length": String(file.size),
     },

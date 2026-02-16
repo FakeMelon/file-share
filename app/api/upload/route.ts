@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { nanoid } from "nanoid";
+import crypto from "crypto";
 import path from "path";
 import { writeFile } from "fs/promises";
 import { insertFile, getFileCount, UPLOADS_DIR } from "@/lib/db";
@@ -7,10 +8,51 @@ import { insertFile, getFileCount, UPLOADS_DIR } from "@/lib/db";
 const MAX_FILE_SIZE = (Number(process.env.MAX_FILE_SIZE_MB) || 100) * 1024 * 1024;
 const MAX_FILES = Number(process.env.MAX_FILES) || 10;
 
+// Rate limiting: track failed attempts per IP
+const failedAttempts = new Map<string, { count: number; resetAt: number }>();
+const RATE_LIMIT_WINDOW = 60_000; // 1 minute
+const RATE_LIMIT_MAX = 5; // max failures per window
+
+function isRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const entry = failedAttempts.get(ip);
+  if (!entry || now > entry.resetAt) return false;
+  return entry.count >= RATE_LIMIT_MAX;
+}
+
+function recordFailure(ip: string): void {
+  const now = Date.now();
+  const entry = failedAttempts.get(ip);
+  if (!entry || now > entry.resetAt) {
+    failedAttempts.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW });
+  } else {
+    entry.count++;
+  }
+}
+
+function checkPassword(input: string, expected: string): boolean {
+  const a = Buffer.from(input);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
 export async function POST(request: NextRequest) {
+  const ip = request.headers.get("x-forwarded-for")?.split(",")[0].trim()
+    || request.headers.get("x-real-ip")
+    || "unknown";
+
+  if (isRateLimited(ip)) {
+    return NextResponse.json(
+      { error: "Too many failed attempts. Try again later." },
+      { status: 429 }
+    );
+  }
+
   // Auth check
-  const password = request.headers.get("x-upload-password");
-  if (!process.env.UPLOAD_PASSWORD || password !== process.env.UPLOAD_PASSWORD) {
+  const password = request.headers.get("x-upload-password") || "";
+  if (!process.env.UPLOAD_PASSWORD || !checkPassword(password, process.env.UPLOAD_PASSWORD)) {
+    recordFailure(ip);
     return NextResponse.json({ error: "Invalid password" }, { status: 401 });
   }
 
